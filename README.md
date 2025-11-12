@@ -1,12 +1,20 @@
 # Oruba Alerts Worker
 
-Worker service that listens to Binance market data and triggers alert notifications through the Oruba backend.
+Background worker that streams Binance market data and triggers Oruba Coin price alert push notifications.
 
 ## Prerequisites
 
 - Node.js 20+
 - npm
 - Fly.io CLI (`flyctl`)
+
+## Overview
+
+This worker keeps an active WebSocket connection to Binance ticker streams, periodically refreshes alert definitions from the Oruba backend, and notifies the backend when an alert threshold is crossed. The backend then stores the event and sends push notifications to users.
+
+- **Tech stack**: Node.js, ws, cross-fetch, dotenv
+- **Platforms**: Vercel (Oruba backend API), Fly.io (worker deployment), Binance WebSocket API
+- **Purpose**: Deliver real-time Oruba Coin price alerts as push notifications when market prices cross user-defined thresholds.
 
 ## Getting Started
 

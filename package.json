@@ -21,6 +21,7 @@
   "homepage": "https://github.com/gokturkdogan/oruba-coin-worker#readme",
   "dependencies": {
     "cross-fetch": "^4.1.0",
+    "dotenv": "^17.2.3",
     "ws": "^8.18.3"
   }
 }

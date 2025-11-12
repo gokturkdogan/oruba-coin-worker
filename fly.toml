@@ -1,4 +1,4 @@
-app = "oruba-alerts-worker"
+app = "oruba-coin-worker"
 primary_region = "ams"
 
 [deploy]

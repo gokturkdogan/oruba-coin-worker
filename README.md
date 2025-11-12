@@ -16,12 +16,11 @@ Worker service that listens to Binance market data and triggers alert notificati
    npm install
    ```
 
-2. Provide the required environment variables (see below) and start the worker locally:
+2. Copy `env.example` to `.env`, fill in secrets, and start the worker locally:
 
    ```bash
-   VERCEL_BASE_URL=https://orubacoin.com \
-   WORKER_API_TOKEN=example-token \
-   ALERT_TRIGGER_TOKEN=trigger-token \
+   cp env.example .env
+   # edit .env with your credentials
    npm start
    ```
 
@@ -30,22 +29,25 @@ Worker service that listens to Binance market data and triggers alert notificati
 - `VERCEL_BASE_URL` (required): Backend base URL. Default production endpoint: `https://orubacoin.com`.
 - `WORKER_API_TOKEN` (required): Token used to fetch alerts from the Oruba backend.
 - `ALERT_TRIGGER_TOKEN` (required): Token used to trigger alerts via `POST /api/alerts/trigger-single`.
+- `BINANCE_SYMBOLS` (optional): Comma-separated list of symbols to watch. Leave empty to auto-derive from backend alerts.
+- `BINANCE_WS_URL` (optional): Override default Binance WebSocket base URL.
+- `ALERT_REFRESH_INTERVAL_MS` (optional): How often to refresh alerts from backend (default: `60000`).
 - `LOG_LEVEL` (optional): Logging level (`error`, `warn`, `info`, `debug`). Defaults to `info`.
 
-## Development Roadmap
+## Runtime Overview
 
-The core logic will be implemented in `src/index.js`:
+`src/index.js` handles:
 
-- Connect to Binance WebSocket streams for relevant trading pairs.
-- Fetch alerts from `GET /api/alerts/...`.
-- Trigger alerts through `POST /api/alerts/trigger-single`.
+- Connecting to Binance WebSocket streams for configured symbols.
+- Periodically fetching active alerts from `GET /api/alerts/worker`.
+- Evaluating price thresholds (above/below/cross logic) and triggering matches through `POST /api/alerts/trigger-single`.
 
 ## Fly.io Deployment
 
 1. Initialize Fly.io app (only run once):
 
    ```bash
-   flyctl launch --name oruba-alerts-worker --runtime node
+   flyctl launch --name oruba-coin-worker --runtime node
    ```
 
 2. Configure secrets:
@@ -55,6 +57,7 @@ The core logic will be implemented in `src/index.js`:
      VERCEL_BASE_URL=https://orubacoin.com \
      WORKER_API_TOKEN=example-token \
      ALERT_TRIGGER_TOKEN=trigger-token \
+     ALERT_REFRESH_INTERVAL_MS=15000 \
      LOG_LEVEL=info
    ```
 
@@ -63,6 +66,8 @@ The core logic will be implemented in `src/index.js`:
    ```bash
    flyctl deploy
    ```
+
+The worker also exposes a lightweight HTTP health endpoint on `PORT` (default 8080) that returns JSON `{ status: "ok" }`, allowing Fly's built-in checks to succeed.
 
 ## License
 

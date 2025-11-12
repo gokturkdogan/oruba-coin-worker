@@ -1,0 +1,9 @@
+app = "oruba-alerts-worker"
+primary_region = "ams"
+
+[deploy]
+strategy = "rolling"
+
+[env]
+LOG_LEVEL = "info"
+

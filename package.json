@@ -1,0 +1,26 @@
+{
+  "name": "oruba-coin-worker",
+  "version": "1.0.0",
+  "description": "Worker service that listens for market data and triggers Oruba alerts.",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gokturkdogan/oruba-coin-worker.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/gokturkdogan/oruba-coin-worker/issues"
+  },
+  "homepage": "https://github.com/gokturkdogan/oruba-coin-worker#readme",
+  "dependencies": {
+    "cross-fetch": "^4.1.0",
+    "ws": "^8.18.3"
+  }
+}

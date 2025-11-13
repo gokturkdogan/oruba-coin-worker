@@ -219,7 +219,12 @@ async function triggerAlert(baseUrl, token, alert, symbol, price, log) {
     alert,
   };
 
-  log.info('Triggering alert', { alertId, symbol, price });
+  log.info('Triggering alert', {
+    alertId,
+    symbol,
+    price,
+    targetPrice: resolveAlertThreshold(alert),
+  });
 
   const response = await fetch(url, {
     method: 'POST',
@@ -479,6 +484,8 @@ async function startWorker(config) {
       if (!parsed) {
         return;
       }
+
+      log.debug('Received price update', parsed);
 
       await handlePriceUpdate(parsed.symbol, parsed.price);
     });

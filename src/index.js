@@ -354,6 +354,10 @@ async function startWorker(config) {
         log
       );
       groupedAlerts = groupAlertsBySymbol(alerts, log);
+      log.debug('Grouped alerts', {
+        symbols: Array.from(groupedAlerts.keys()),
+        total: alerts.length,
+      });
       triggeredAlerts.clear();
 
        if (!explicitSymbols) {
@@ -449,6 +453,7 @@ async function startWorker(config) {
   function connect() {
     if (trackedSymbols.length === 0) {
       log.warn('No symbols to track. Waiting for alerts.');
+      log.debug('Tracked symbols state', { trackedSymbols });
       return;
     }
 

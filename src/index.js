@@ -194,7 +194,33 @@ async function fetchActiveAlerts(baseUrl, token, log) {
     throw new Error('Alerts endpoint returned unexpected payload');
   }
 
-  log.info('Fetched alerts', { count: alerts.length });
+  const summary = alerts.reduce((acc, alert) => {
+    const symbol = resolveSymbol(alert);
+    const target = resolveAlertThreshold(alert);
+
+    if (!symbol || !Number.isFinite(target)) {
+      return acc;
+    }
+
+    if (!acc[symbol]) {
+      acc[symbol] = new Set();
+    }
+
+    acc[symbol].add(target);
+    return acc;
+  }, {});
+
+  const symbols = Object.keys(summary);
+  const targets = symbols.reduce((acc, symbol) => {
+    acc[symbol] = Array.from(summary[symbol]);
+    return acc;
+  }, {});
+
+  log.info('Fetched alerts', {
+    count: alerts.length,
+    symbols,
+    targets,
+  });
 
   return alerts;
 }
@@ -304,6 +330,7 @@ function parseTickerMessage(messageBuffer, log) {
         : Number(priceCandidate);
 
     if (!symbol || !Number.isFinite(price)) {
+      log.debug('Unsupported Binance payload', { payload });
       log.debug('Received unsupported payload', { payload });
       return undefined;
     }
@@ -396,6 +423,13 @@ async function startWorker(config) {
     const previousPrice = lastPrices.get(symbol);
     lastPrices.set(symbol, price);
 
+    log.debug('Evaluating alerts', {
+      symbol,
+      price,
+      previousPrice,
+      alertCount: symbolAlerts.length,
+    });
+
     for (let i = 0; i < symbolAlerts.length; i += 1) {
       const alert = symbolAlerts[i];
       const alertId = resolveAlertId(alert);
@@ -413,10 +447,24 @@ async function startWorker(config) {
         lastTriggeredAt &&
         Date.now() - lastTriggeredAt < cooldown
       ) {
+        log.debug('Skipping alert due to cooldown', {
+          alertId,
+          symbol,
+          cooldownMs: cooldown,
+          lastTriggeredAt,
+        });
         continue;
       }
 
       if (!shouldTriggerAlert(alert, price, previousPrice, log)) {
+        log.debug('Alert condition not met', {
+          alertId,
+          symbol,
+          price,
+          targetPrice: resolveAlertThreshold(alert),
+          operator: resolveAlertOperator(alert),
+          previousPrice,
+        });
         continue;
       }
 

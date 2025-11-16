@@ -5,7 +5,7 @@ Real-time background service that listens to Binance price streams and triggers 
 ### 🔧 Technologies
 - Node.js
 - ws (WebSocket)
-- cross-fetch
+- cross-fetch 
 - dotenv
 
 ### 🌐 Platforms

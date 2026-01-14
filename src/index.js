@@ -9,6 +9,7 @@ const MAX_WS_RETRY_MS = 60_000;
 
 const DEFAULT_VOLUME_WINDOW_MS = 15 * 60_000;
 const DEFAULT_VOLUME_THRESHOLD_USD = 200_000;
+const DEFAULT_FUTURES_VOLUME_THRESHOLD_USD = 500_000;
 const DEFAULT_NOTIFICATION_COOLDOWN_MS = 15 * 60_000;
 
 // Major coins to exclude from volume tracking
@@ -25,6 +26,7 @@ const EXCLUDED_SYMBOLS = new Set([
   'usdtusdt',
   'wbtcusdt',
   'usd1usdt',
+  'fdusdusdt',
 ]);
 
 function assertEnv(name, optional) {
@@ -68,8 +70,11 @@ function parseSymbols(raw) {
     .filter((s) => !EXCLUDED_SYMBOLS.has(s));
 }
 
-function buildBinanceWsUrl(symbols, customUrl) {
-  const base = customUrl || 'wss://stream.binance.com:9443';
+function buildBinanceWsUrl(symbols, customUrl, type = 'spot') {
+  const defaultBase = type === 'futures' 
+    ? 'wss://fstream.binance.com'
+    : 'wss://stream.binance.com:9443';
+  const base = customUrl || defaultBase;
   if (!symbols.length) return undefined;
 
   if (symbols.length === 1) {
@@ -136,6 +141,36 @@ async function fetchTrackedSymbols(baseUrl, token, log) {
     .filter((s) => !EXCLUDED_SYMBOLS.has(s));
 }
 
+async function fetchFuturesSymbols(baseUrl, token, log) {
+  const url = `${normalizeBaseUrl(baseUrl)}/api/volume-alert/futures-symbols`;
+
+  const response = await fetch(url, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(
+      `Failed to fetch futures symbols (${response.status} ${response.statusText}): ${text}`
+    );
+  }
+
+  const payload = await response.json();
+  const symbols = Array.isArray(payload) ? payload : payload.symbols || [];
+
+  if (!Array.isArray(symbols)) {
+    throw new Error('Futures symbols endpoint returned unexpected payload');
+  }
+
+  return symbols
+    .map((s) => String(s).toLowerCase())
+    .filter(Boolean)
+    .filter((s) => s.endsWith('usdt'))
+    .filter((s) => !EXCLUDED_SYMBOLS.has(s));
+}
+
 async function broadcastVolumeAlert(baseUrl, token, symbol, volumeUsd, log) {
   const url = `${normalizeBaseUrl(baseUrl)}/api/push/volume`;
 
@@ -176,6 +211,46 @@ async function broadcastVolumeAlert(baseUrl, token, symbol, volumeUsd, log) {
   return result;
 }
 
+async function broadcastFuturesVolumeAlert(baseUrl, token, symbol, volumeUsd, log) {
+  const url = `${normalizeBaseUrl(baseUrl)}/api/push/futures-volume`;
+
+  log.info('Broadcasting futures volume alert', {
+    symbol,
+    volumeUsd,
+  });
+
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      symbol,
+      volumeUsd,
+      windowMinutes: 15,
+    }),
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(
+      `Failed to broadcast futures volume alert (${response.status} ${response.statusText}): ${text}`
+    );
+  }
+
+  const result = await response.json();
+  const successful = result.successful || result.total || 0;
+  const total = result.total || 0;
+  const emails = result.successfulEmails || [];
+  
+  // Console log for sent notifications
+  const emailList = emails.length > 0 ? ` | Users: ${emails.join(', ')}` : '';
+  console.log(`📢 FUTURES NOTIFICATION SENT: ${symbol.toUpperCase()} | Volume: $${Math.round(volumeUsd).toLocaleString()} | Sent to: ${successful}/${total} users${emailList}`);
+
+  return result;
+}
+
 function createRollingWindow(windowMs) {
   const entries = [];
   let sum = 0;
@@ -210,6 +285,7 @@ async function startWorker(config) {
     volumeWindowMs,
     volumeThresholdUsd,
     notificationCooldownMs,
+    type = 'spot', // 'spot' or 'futures'
   } = config;
 
   let ws;
@@ -252,10 +328,12 @@ async function startWorker(config) {
     if (explicitSymbols) return;
 
     try {
-      const symbols = await fetchTrackedSymbols(baseUrl, workerApiToken, log);
+      const symbols = type === 'futures' 
+        ? await fetchFuturesSymbols(baseUrl, workerApiToken, log)
+        : await fetchTrackedSymbols(baseUrl, workerApiToken, log);
       const unique = Array.from(new Set(symbols)).sort();
 
-      log.info('Tracked symbols', { count: unique.length, symbols: unique });
+      log.info(`Tracked ${type} symbols`, { count: unique.length, symbols: unique });
 
       if (!symbolsEqual(unique, trackedSymbols)) {
         trackedSymbols = unique;
@@ -263,7 +341,7 @@ async function startWorker(config) {
         reconnect(true);
       }
     } catch (error) {
-      log.error('Failed to refresh symbols', { error });
+      log.error(`Failed to refresh ${type} symbols`, { error });
     }
   }
 
@@ -301,9 +379,13 @@ async function startWorker(config) {
     lastBroadcastAt.set(symbol, now);
     
     try {
-      await broadcastVolumeAlert(baseUrl, pushTriggerToken, symbol, sum, log);
+      if (type === 'futures') {
+        await broadcastFuturesVolumeAlert(baseUrl, pushTriggerToken, symbol, sum, log);
+      } else {
+        await broadcastVolumeAlert(baseUrl, pushTriggerToken, symbol, sum, log);
+      }
     } catch (error) {
-      log.error('Failed to broadcast volume alert', { symbol, error });
+      log.error(`Failed to broadcast ${type} volume alert`, { symbol, error });
       // Cooldown already set above, so no need to set again
       // This prevents spam even if API call fails
     }
@@ -323,17 +405,17 @@ async function startWorker(config) {
 
   function connect() {
     if (!trackedSymbols.length) {
-      log.warn('No symbols to track. Waiting for symbols.');
+      log.warn(`No ${type} symbols to track. Waiting for symbols.`);
       return;
     }
 
-    const url = buildBinanceWsUrl(trackedSymbols, process.env.BINANCE_WS_URL);
+    const url = buildBinanceWsUrl(trackedSymbols, process.env.BINANCE_WS_URL, type);
     if (!url) {
-      log.warn('Unable to determine Binance WebSocket URL. Skipping connection.');
+      log.warn(`Unable to determine Binance ${type} WebSocket URL. Skipping connection.`);
       return;
     }
 
-    log.info('Connecting to Binance WebSocket', {
+    log.info(`Connecting to Binance ${type} WebSocket`, {
       url,
       symbolCount: trackedSymbols.length,
     });
@@ -402,6 +484,9 @@ async function main() {
   const volumeThresholdUsd =
     Number(assertEnv('VOLUME_THRESHOLD_USD', true)) || DEFAULT_VOLUME_THRESHOLD_USD;
 
+  const futuresVolumeThresholdUsd =
+    Number(assertEnv('FUTURES_VOLUME_THRESHOLD_USD', true)) || DEFAULT_FUTURES_VOLUME_THRESHOLD_USD;
+
   const notificationCooldownMs =
     Number(assertEnv('VOLUME_NOTIFICATION_COOLDOWN_MS', true)) ||
     DEFAULT_NOTIFICATION_COOLDOWN_MS;
@@ -421,15 +506,17 @@ async function main() {
       log.error('Failed to start health server', { error });
     });
 
-  log.info('Starting Oruba 15m volume worker', {
+  log.info('Starting Oruba 15m volume workers', {
     baseUrl: normalizeBaseUrl(baseUrl),
     symbolRefreshMs,
     volumeWindowMs,
-    volumeThresholdUsd,
+    spotThresholdUsd: volumeThresholdUsd,
+    futuresThresholdUsd: futuresVolumeThresholdUsd,
     notificationCooldownMs,
   });
 
-  const stop = await startWorker({
+  // Start spot worker
+  const stopSpot = await startWorker({
     baseUrl,
     workerApiToken,
     pushTriggerToken,
@@ -438,11 +525,26 @@ async function main() {
     volumeWindowMs,
     volumeThresholdUsd,
     notificationCooldownMs,
+    type: 'spot',
+  });
+
+  // Start futures worker
+  const stopFutures = await startWorker({
+    baseUrl,
+    workerApiToken,
+    pushTriggerToken,
+    log,
+    symbolRefreshMs,
+    volumeWindowMs,
+    volumeThresholdUsd: futuresVolumeThresholdUsd,
+    notificationCooldownMs,
+    type: 'futures',
   });
 
   function handleExit(signal) {
     log.info(`Received ${signal}. Shutting down gracefully.`);
-    stop();
+    stopSpot();
+    stopFutures();
     process.exit(0);
   }
 

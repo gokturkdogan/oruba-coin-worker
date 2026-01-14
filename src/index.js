@@ -3,9 +3,29 @@ const http = require('http');
 const WebSocket = require('ws');
 const fetch = require('cross-fetch');
 
-const DEFAULT_ALERT_REFRESH_INTERVAL_MS = 60_000;
+const DEFAULT_SYMBOL_REFRESH_MS = 60_000;
 const DEFAULT_WS_RETRY_MS = 5_000;
 const MAX_WS_RETRY_MS = 60_000;
+
+const DEFAULT_VOLUME_WINDOW_MS = 15 * 60_000;
+const DEFAULT_VOLUME_THRESHOLD_USD = 200_000;
+const DEFAULT_NOTIFICATION_COOLDOWN_MS = 15 * 60_000;
+
+// Major coins to exclude from volume tracking
+const EXCLUDED_SYMBOLS = new Set([
+  'btcusdt',
+  'ethusdt',
+  'solusdt',
+  'bnbusdt',
+  'bchusdt',
+  'xrpusdt',
+  'linkusdt',
+  'dogeusdt',
+  'usdcusdt',
+  'usdtusdt',
+  'wbtcusdt',
+  'usd1usdt',
+]);
 
 function assertEnv(name, optional) {
   const value = process.env[name];
@@ -34,145 +54,60 @@ function createLogger(level) {
 }
 
 function normalizeBaseUrl(url) {
-  if (!url) {
-    return url;
-  }
-
+  if (!url) return url;
   return url.endsWith('/') ? url.slice(0, -1) : url;
 }
 
 function parseSymbols(raw) {
-  if (!raw) {
-    return [];
-  }
-
+  if (!raw) return [];
   return String(raw)
     .split(',')
     .map((item) => item.trim())
     .filter(Boolean)
-    .map((item) => item.toLowerCase());
+    .map((item) => item.toLowerCase())
+    .filter((s) => !EXCLUDED_SYMBOLS.has(s));
 }
 
-function resolveAlertId(alert) {
-  return alert.id || alert._id || alert.uuid;
+function buildBinanceWsUrl(symbols, customUrl) {
+  const base = customUrl || 'wss://stream.binance.com:9443';
+  if (!symbols.length) return undefined;
+
+  if (symbols.length === 1) {
+    return `${base}/ws/${symbols[0]}@trade`;
+  }
+
+  const streams = symbols.map((symbol) => `${symbol}@trade`).join('/');
+  return `${base}/stream?streams=${streams}`;
 }
 
-function resolveAlertThreshold(alert) {
-  const candidates = [
-    alert.targetPrice,
-    alert.price,
-    alert.threshold,
-    alert.triggerPrice,
-    alert.value,
-  ];
+function parseTradeMessage(messageBuffer, log) {
+  try {
+    const payload = JSON.parse(messageBuffer.toString());
+    const data = payload.data || payload;
 
-  for (let i = 0; i < candidates.length; i += 1) {
-    const candidate = candidates[i];
-    const number = typeof candidate === 'string' ? Number(candidate) : candidate;
+    const symbol = data.s ? String(data.s).toLowerCase() : undefined;
+    const tradeTime = Number(data.T ?? data.E ?? Date.now());
+    const price = Number(data.p);
+    const qty = Number(data.q);
 
-    if (Number.isFinite(number)) {
-      return number;
+    if (!symbol || !Number.isFinite(price) || !Number.isFinite(qty)) {
+      return undefined;
     }
-  }
 
-  return undefined;
-}
+    const quoteUsd = price * qty; // USDT pairs => approx USD
+    if (!Number.isFinite(quoteUsd)) {
+      return undefined;
+    }
 
-function resolveAlertOperator(alert) {
-  const raw =
-    alert.operator ||
-    alert.direction ||
-    alert.comparison ||
-    alert.condition ||
-    alert.type;
-
-  return raw ? String(raw).toLowerCase() : 'above';
-}
-
-function resolveCooldown(alert) {
-  const raw = alert.cooldownMs || alert.cooldownSeconds || alert.cooldown;
-
-  if (raw === undefined || raw === null) {
-    return 0;
-  }
-
-  const value = Number(raw);
-
-  if (!Number.isFinite(value)) {
-    return 0;
-  }
-
-  return raw === alert.cooldownSeconds ? value * 1_000 : value;
-}
-
-function resolveSymbol(alert) {
-  if (!alert.symbol && alert.asset) {
-    return String(alert.asset).toLowerCase();
-  }
-
-  return alert.symbol ? String(alert.symbol).toLowerCase() : undefined;
-}
-
-function shouldTriggerAlert(alert, currentPrice, previousPrice, log) {
-  const threshold = resolveAlertThreshold(alert);
-
-  if (!Number.isFinite(threshold)) {
-    log.warn('Skipping alert with invalid threshold', { alert });
-    return false;
-  }
-
-  const operator = resolveAlertOperator(alert);
-
-  switch (operator) {
-    case 'above':
-    case 'greater_than':
-    case 'gt':
-    case 'gte':
-    case 'greater_or_equal':
-    case '>':
-    case '>=':
-      return currentPrice >= threshold;
-    case 'below':
-    case 'less_than':
-    case 'lt':
-    case 'lte':
-    case 'less_or_equal':
-    case '<':
-    case '<=':
-      return currentPrice <= threshold;
-    case 'equal':
-    case 'equals':
-    case 'eq':
-    case '=':
-    case '==':
-      return Math.abs(currentPrice - threshold) <= 1e-8;
-    case 'crosses_above':
-    case 'cross_above':
-      return (
-        Number.isFinite(previousPrice) &&
-        previousPrice < threshold &&
-        currentPrice >= threshold
-      );
-    case 'crosses_below':
-    case 'cross_below':
-      return (
-        Number.isFinite(previousPrice) &&
-        previousPrice > threshold &&
-        currentPrice <= threshold
-      );
-    default:
-      log.warn('Unknown alert operator, defaulting to "above"', {
-        operator,
-        alert,
-      });
-      return currentPrice >= threshold;
+    return { symbol, tradeTime, quoteUsd };
+  } catch (error) {
+    // Silently ignore parse errors
+    return undefined;
   }
 }
 
-async function fetchActiveAlerts(baseUrl, token, log) {
-  const url = `${normalizeBaseUrl(baseUrl)}/api/alerts/worker`;
-
-  log.debug('Fetching active alerts', { url });
+async function fetchTrackedSymbols(baseUrl, token, log) {
+  const url = `${normalizeBaseUrl(baseUrl)}/api/volume-alert/symbols`;
 
   const response = await fetch(url, {
     headers: {
@@ -183,73 +118,30 @@ async function fetchActiveAlerts(baseUrl, token, log) {
   if (!response.ok) {
     const text = await response.text();
     throw new Error(
-      `Failed to fetch active alerts (${response.status} ${response.statusText}): ${text}`
+      `Failed to fetch symbols (${response.status} ${response.statusText}): ${text}`
     );
   }
 
   const payload = await response.json();
-  const alerts = Array.isArray(payload) ? payload : payload.alerts || [];
+  const symbols = Array.isArray(payload) ? payload : payload.symbols || [];
 
-  if (!Array.isArray(alerts)) {
-    throw new Error('Alerts endpoint returned unexpected payload');
+  if (!Array.isArray(symbols)) {
+    throw new Error('Symbols endpoint returned unexpected payload');
   }
 
-  const summary = alerts.reduce((acc, alert) => {
-    const symbol = resolveSymbol(alert);
-    const target = resolveAlertThreshold(alert);
-
-    if (!symbol || !Number.isFinite(target)) {
-      return acc;
-    }
-
-    if (!acc[symbol]) {
-      acc[symbol] = new Set();
-    }
-
-    acc[symbol].add(target);
-    return acc;
-  }, {});
-
-  const symbols = Object.keys(summary);
-  const targets = symbols.reduce((acc, symbol) => {
-    acc[symbol] = Array.from(summary[symbol]);
-    return acc;
-  }, {});
-
-  log.info('Fetched alerts', {
-    count: alerts.length,
-    symbols,
-    targets,
-  });
-
-  return alerts;
+  return symbols
+    .map((s) => String(s).toLowerCase())
+    .filter(Boolean)
+    .filter((s) => s.endsWith('usdt'))
+    .filter((s) => !EXCLUDED_SYMBOLS.has(s));
 }
 
-async function triggerAlert(baseUrl, token, alert, symbol, price, log) {
-  const alertId = resolveAlertId(alert);
+async function broadcastVolumeAlert(baseUrl, token, symbol, volumeUsd, log) {
+  const url = `${normalizeBaseUrl(baseUrl)}/api/push/volume`;
 
-  if (!alertId) {
-    log.warn('Cannot trigger alert without an id', { alert });
-    return false;
-  }
-
-  const url = `${normalizeBaseUrl(
-    baseUrl
-  )}/api/alerts/trigger-single`;
-
-  const body = {
-    alertId,
+  log.info('Broadcasting volume alert', {
     symbol,
-    price,
-    triggeredAt: new Date().toISOString(),
-    alert,
-  };
-
-  log.info('Triggering alert', {
-    alertId,
-    symbol,
-    price,
-    targetPrice: resolveAlertThreshold(alert),
+    volumeUsd,
   });
 
   const response = await fetch(url, {
@@ -258,240 +150,166 @@ async function triggerAlert(baseUrl, token, alert, symbol, price, log) {
       Authorization: `Bearer ${token}`,
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify(body),
+    body: JSON.stringify({
+      symbol,
+      volumeUsd,
+      windowMinutes: 15,
+    }),
   });
 
   if (!response.ok) {
     const text = await response.text();
     throw new Error(
-      `Failed to trigger alert ${alertId} (${response.status} ${response.statusText}): ${text}`
+      `Failed to broadcast volume alert (${response.status} ${response.statusText}): ${text}`
     );
   }
 
-  log.debug('Alert triggered successfully', { alertId });
+  const result = await response.json();
+  const successful = result.successful || result.total || 0;
+  const total = result.total || 0;
+  const emails = result.successfulEmails || [];
+  
+  // Console log for sent notifications
+  const emailList = emails.length > 0 ? ` | Users: ${emails.join(', ')}` : '';
+  console.log(`📢 NOTIFICATION SENT: ${symbol.toUpperCase()} | Volume: $${Math.round(volumeUsd).toLocaleString()} | Sent to: ${successful}/${total} users${emailList}`);
 
-  return true;
+  return result;
 }
 
-function groupAlertsBySymbol(alerts, log) {
-  const grouped = new Map();
+function createRollingWindow(windowMs) {
+  const entries = [];
+  let sum = 0;
 
-  alerts.forEach((alert) => {
-    const symbol = resolveSymbol(alert);
-
-    if (!symbol) {
-      log.warn('Skipping alert without symbol', { alert });
-      return;
-    }
-
-    if (!grouped.has(symbol)) {
-      grouped.set(symbol, []);
-    }
-
-    grouped.get(symbol).push(alert);
-  });
-
-  return grouped;
-}
-
-function buildBinanceWsUrl(symbols, customUrl) {
-  const base = customUrl || 'wss://stream.binance.com:9443';
-
-  if (symbols.length === 0) {
-    return undefined;
+  function add(ts, value) {
+    entries.push({ ts, value });
+    sum += value;
   }
 
-  if (symbols.length === 1) {
-    return `${base}/ws/${symbols[0]}@ticker`;
-  }
-
-  const streams = symbols.map((symbol) => `${symbol}@ticker`).join('/');
-
-  return `${base}/stream?streams=${streams}`;
-}
-
-function parseTickerMessage(messageBuffer, log) {
-  try {
-    const payload = JSON.parse(messageBuffer.toString());
-    const data = payload.data || payload;
-
-    const symbol = data.s
-      ? String(data.s).toLowerCase()
-      : payload.stream
-      ? String(payload.stream.split('@')[0]).toLowerCase()
-      : undefined;
-
-    const priceCandidate =
-      data.c || data.p || data.lastPrice || data.price || data.w;
-
-    const price =
-      typeof priceCandidate === 'string'
-        ? Number(priceCandidate)
-        : Number(priceCandidate);
-
-    if (!symbol || !Number.isFinite(price)) {
-      log.debug('Unsupported Binance payload', { payload });
-      log.debug('Received unsupported payload', { payload });
-      return undefined;
+  function prune(now) {
+    const cutoff = now - windowMs;
+    while (entries.length && entries[0].ts < cutoff) {
+      const item = entries.shift();
+      sum -= item.value;
     }
-
-    return { symbol, price };
-  } catch (error) {
-    log.warn('Failed to parse Binance message', { error });
-    return undefined;
   }
+
+  function getSum() {
+    return sum;
+  }
+
+  return { add, prune, getSum };
 }
 
 async function startWorker(config) {
   const {
-    alertsBaseUrl,
-    alertsFetchToken,
-    alertTriggerToken,
-    symbols,
-    refreshIntervalMs,
+    baseUrl,
+    workerApiToken,
+    pushTriggerToken,
     log,
+    symbolRefreshMs,
+    volumeWindowMs,
+    volumeThresholdUsd,
+    notificationCooldownMs,
   } = config;
 
   let ws;
   let reconnectAttempts = 0;
   let closedByUser = false;
-  let groupedAlerts = new Map();
-  const triggeredAlerts = new Map();
-  const lastPrices = new Map();
 
-  let trackedSymbols = Array.isArray(symbols) && symbols.length > 0 ? symbols : [];
-  let explicitSymbols = Array.isArray(symbols) && symbols.length > 0;
+  let trackedSymbols = parseSymbols(process.env.BINANCE_SYMBOLS);
+  const explicitSymbols = trackedSymbols.length > 0;
 
-  function symbolsEqual(a, b) {
-    if (a.length !== b.length) {
-      return false;
+  const windows = new Map(); // symbol -> rolling window
+  const lastBroadcastAt = new Map(); // symbol -> timestamp
+
+  function getWindow(symbol) {
+    if (!windows.has(symbol)) {
+      windows.set(symbol, createRollingWindow(volumeWindowMs));
     }
+    return windows.get(symbol);
+  }
 
-    const setA = new Set(a);
-
-    for (let i = 0; i < b.length; i += 1) {
-      if (!setA.has(b[i])) {
-        return false;
+  function cleanupWindows(validSymbols) {
+    const keep = new Set(validSymbols);
+    for (const key of windows.keys()) {
+      if (!keep.has(key)) {
+        windows.delete(key);
+        lastBroadcastAt.delete(key);
       }
     }
+  }
 
+  function symbolsEqual(a, b) {
+    if (a.length !== b.length) return false;
+    const setA = new Set(a);
+    for (let i = 0; i < b.length; i += 1) {
+      if (!setA.has(b[i])) return false;
+    }
     return true;
   }
 
-  async function loadAlerts() {
+  async function refreshSymbols() {
+    if (explicitSymbols) return;
+
     try {
-      const alerts = await fetchActiveAlerts(
-        alertsBaseUrl,
-        alertsFetchToken,
-        log
-      );
-      groupedAlerts = groupAlertsBySymbol(alerts, log);
-      log.debug('Grouped alerts', {
-        symbols: Array.from(groupedAlerts.keys()),
-        total: alerts.length,
-      });
-      triggeredAlerts.clear();
+      const symbols = await fetchTrackedSymbols(baseUrl, workerApiToken, log);
+      const unique = Array.from(new Set(symbols)).sort();
 
-       if (!explicitSymbols) {
-        const derivedSymbols = Array.from(groupedAlerts.keys());
+      log.info('Tracked symbols', { count: unique.length, symbols: unique });
 
-        if (!symbolsEqual(derivedSymbols, trackedSymbols)) {
-          trackedSymbols = derivedSymbols;
-          log.info('Updated tracked symbols from alerts', { trackedSymbols });
-          reconnect(true);
-        }
+      if (!symbolsEqual(unique, trackedSymbols)) {
+        trackedSymbols = unique;
+        cleanupWindows(trackedSymbols);
+        reconnect(true);
       }
     } catch (error) {
-      log.error('Failed to refresh alerts', { error });
+      log.error('Failed to refresh symbols', { error });
     }
   }
 
-  function scheduleAlertRefresh() {
+  function scheduleSymbolRefresh() {
     setTimeout(async () => {
-      await loadAlerts();
-      scheduleAlertRefresh();
-    }, refreshIntervalMs);
+      await refreshSymbols();
+      scheduleSymbolRefresh();
+    }, symbolRefreshMs);
   }
 
-  async function handlePriceUpdate(symbol, price) {
-    const symbolAlerts = groupedAlerts.get(symbol);
+  async function handleTrade(symbol, tradeTime, quoteUsd) {
+    const now = Date.now();
+    const window = getWindow(symbol);
+    window.add(tradeTime || now, quoteUsd);
+    window.prune(now);
 
-    if (!symbolAlerts || symbolAlerts.length === 0) {
+    const sum = window.getSum();
+
+    if (sum < volumeThresholdUsd) {
       return;
     }
 
-    const previousPrice = lastPrices.get(symbol);
-    lastPrices.set(symbol, price);
-
-    log.debug('Evaluating alerts', {
-      symbol,
-      price,
-      previousPrice,
-      alertCount: symbolAlerts.length,
-    });
-
-    for (let i = 0; i < symbolAlerts.length; i += 1) {
-      const alert = symbolAlerts[i];
-      const alertId = resolveAlertId(alert);
-
-      if (!alertId) {
-        continue;
+    // CRITICAL: Check cooldown FIRST before any processing
+    // Aynı coin için 15 dakika içinde tekrar bildirim gönderilmemeli
+    const last = lastBroadcastAt.get(symbol);
+    if (last) {
+      const elapsedMs = now - last;
+      if (elapsedMs < notificationCooldownMs) {
+        return; // CRITICAL: Exit early, do NOT send notification (cooldown active)
       }
+    }
 
-      const cooldown = resolveCooldown(alert);
-      const lastTriggeredAt = triggeredAlerts.get(alertId);
-
-      if (
-        Number.isFinite(cooldown) &&
-        cooldown > 0 &&
-        lastTriggeredAt &&
-        Date.now() - lastTriggeredAt < cooldown
-      ) {
-        log.debug('Skipping alert due to cooldown', {
-          alertId,
-          symbol,
-          cooldownMs: cooldown,
-          lastTriggeredAt,
-        });
-        continue;
-      }
-
-      if (!shouldTriggerAlert(alert, price, previousPrice, log)) {
-        log.debug('Alert condition not met', {
-          alertId,
-          symbol,
-          price,
-          targetPrice: resolveAlertThreshold(alert),
-          operator: resolveAlertOperator(alert),
-          previousPrice,
-        });
-        continue;
-      }
-
-      try {
-        const success = await triggerAlert(
-          alertsBaseUrl,
-          alertTriggerToken,
-          alert,
-          symbol,
-          price,
-          log
-        );
-
-        if (success) {
-          triggeredAlerts.set(alertId, Date.now());
-        }
-      } catch (error) {
-        log.error('Failed to trigger alert', {
-          alertId,
-          symbol,
-          error,
-        });
-      }
+    // CRITICAL: Set cooldown IMMEDIATELY before sending to prevent race conditions
+    // Bu sayede aynı anda gelen trade'ler için de cooldown aktif olur
+    lastBroadcastAt.set(symbol, now);
+    
+    try {
+      await broadcastVolumeAlert(baseUrl, pushTriggerToken, symbol, sum, log);
+    } catch (error) {
+      log.error('Failed to broadcast volume alert', { symbol, error });
+      // Cooldown already set above, so no need to set again
+      // This prevents spam even if API call fails
     }
   }
 
-  function reconnect(dueToSymbolsChange = false) {
+  function reconnect(dueToSymbolsChange) {
     if (ws) {
       log.info('Closing existing WebSocket connection', {
         reason: dueToSymbolsChange ? 'symbols-changed' : 'reconnect',
@@ -504,20 +322,21 @@ async function startWorker(config) {
   }
 
   function connect() {
-    if (trackedSymbols.length === 0) {
-      log.warn('No symbols to track. Waiting for alerts.');
-      log.debug('Tracked symbols state', { trackedSymbols });
+    if (!trackedSymbols.length) {
+      log.warn('No symbols to track. Waiting for symbols.');
       return;
     }
 
     const url = buildBinanceWsUrl(trackedSymbols, process.env.BINANCE_WS_URL);
-
     if (!url) {
       log.warn('Unable to determine Binance WebSocket URL. Skipping connection.');
       return;
     }
 
-    log.info('Connecting to Binance WebSocket', { url });
+    log.info('Connecting to Binance WebSocket', {
+      url,
+      symbolCount: trackedSymbols.length,
+    });
 
     ws = new WebSocket(url);
 
@@ -527,27 +346,14 @@ async function startWorker(config) {
     });
 
     ws.on('message', async (message) => {
-      const parsed = parseTickerMessage(message, log);
-
-      if (!parsed) {
-        return;
-      }
-
-      log.debug('Received price update', parsed);
-
-      await handlePriceUpdate(parsed.symbol, parsed.price);
+      const parsed = parseTradeMessage(message, log);
+      if (!parsed) return;
+      await handleTrade(parsed.symbol, parsed.tradeTime, parsed.quoteUsd);
     });
 
     ws.on('close', (code, reason) => {
-      log.warn('Binance WebSocket closed', {
-        code,
-        reason: reason.toString(),
-      });
-
-      if (closedByUser) {
-        return;
-      }
-
+      log.warn('Binance WebSocket closed', { code, reason: reason.toString() });
+      if (closedByUser) return;
       scheduleReconnect();
     });
 
@@ -565,38 +371,43 @@ async function startWorker(config) {
     );
 
     log.info('Reconnecting to Binance WebSocket', { delay });
-
     setTimeout(connect, delay);
   }
 
-  await loadAlerts();
-  scheduleAlertRefresh();
+  await refreshSymbols();
+  scheduleSymbolRefresh();
+
   if (!ws && trackedSymbols.length > 0) {
     connect();
   }
 
   return () => {
     closedByUser = true;
-
-    if (ws) {
-      ws.close();
-    }
+    if (ws) ws.close();
   };
 }
 
 async function main() {
-  const vercelBaseUrl = assertEnv('VERCEL_BASE_URL');
+  const baseUrl = assertEnv('VERCEL_BASE_URL');
   const workerApiToken = assertEnv('WORKER_API_TOKEN');
-  const alertTriggerToken = assertEnv('ALERT_TRIGGER_TOKEN');
-  const logLevel = assertEnv('LOG_LEVEL', true) || 'info';
-  const refreshIntervalRaw = assertEnv('ALERT_REFRESH_INTERVAL_MS', true);
-  const symbolsRaw = assertEnv('BINANCE_SYMBOLS', true);
+  const pushTriggerToken = assertEnv('ALERT_TRIGGER_TOKEN');
 
-  const refreshIntervalMs = Number(refreshIntervalRaw) || DEFAULT_ALERT_REFRESH_INTERVAL_MS;
-  const symbols = parseSymbols(symbolsRaw);
-  const log = createLogger(logLevel);
+  const logLevel = assertEnv('LOG_LEVEL', true) || 'info';
+  const symbolRefreshMs =
+    Number(assertEnv('SYMBOL_REFRESH_INTERVAL_MS', true)) || DEFAULT_SYMBOL_REFRESH_MS;
+
+  const volumeWindowMs =
+    Number(assertEnv('VOLUME_WINDOW_MS', true)) || DEFAULT_VOLUME_WINDOW_MS;
+
+  const volumeThresholdUsd =
+    Number(assertEnv('VOLUME_THRESHOLD_USD', true)) || DEFAULT_VOLUME_THRESHOLD_USD;
+
+  const notificationCooldownMs =
+    Number(assertEnv('VOLUME_NOTIFICATION_COOLDOWN_MS', true)) ||
+    DEFAULT_NOTIFICATION_COOLDOWN_MS;
 
   const port = Number(process.env.PORT) || 8080;
+  const log = createLogger(logLevel);
 
   http
     .createServer((_req, res) => {
@@ -610,21 +421,23 @@ async function main() {
       log.error('Failed to start health server', { error });
     });
 
-  log.info('Starting Oruba alerts worker');
-  log.debug('Configuration', {
-    vercelBaseUrl: normalizeBaseUrl(vercelBaseUrl),
-    symbols,
-    refreshIntervalMs,
-    logLevel,
+  log.info('Starting Oruba 15m volume worker', {
+    baseUrl: normalizeBaseUrl(baseUrl),
+    symbolRefreshMs,
+    volumeWindowMs,
+    volumeThresholdUsd,
+    notificationCooldownMs,
   });
 
   const stop = await startWorker({
-    alertsBaseUrl: vercelBaseUrl,
-    alertsFetchToken: workerApiToken,
-    alertTriggerToken,
-    symbols,
-    refreshIntervalMs,
+    baseUrl,
+    workerApiToken,
+    pushTriggerToken,
     log,
+    symbolRefreshMs,
+    volumeWindowMs,
+    volumeThresholdUsd,
+    notificationCooldownMs,
   });
 
   function handleExit(signal) {
@@ -643,4 +456,3 @@ if (require.main === module) {
     process.exitCode = 1;
   });
 }
-

@@ -1,6 +1,6 @@
 🚀 **Oruba Alerts Worker** 
 
-Real-time background service that listens to Binance price streams and triggers push notifications for Oruba Coin users. Alerts are fetched from the Oruba backend, prices are tracked via WebSocket, and threshold crossings generate instant push notifications. 🔔
+Real-time background service that listens to Binance **spot trade streams**, keeps a **rolling 15-minute volume (USD)** per symbol, and triggers **push notifications** for all Oruba Coin users when the volume crosses a threshold. 🔔
 
 ### 🔧 Technologies
 - Node.js

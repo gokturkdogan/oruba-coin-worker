@@ -415,14 +415,14 @@ async function startWorker(config) {
     }
   }
 
-  function scheduleSettingsRefresh() {
-    // Refresh settings every 5 minutes (check if changed, but don't spam API)
-    const SETTINGS_REFRESH_MS = 5 * 60 * 1000; // 5 minutes
-    setTimeout(async () => {
-      await refreshVolumeSettings();
-      scheduleSettingsRefresh();
-    }, SETTINGS_REFRESH_MS);
-  }
+  // Expose refresh function for external trigger (no periodic refresh)
+  return {
+    stop: () => {
+      closedByUser = true;
+      if (ws) ws.close();
+    },
+    refreshSettings: refreshVolumeSettings,
+  };
 
   async function handleTrade(symbol, tradeTime, quoteUsd) {
     const now = Date.now();
@@ -531,17 +531,20 @@ async function startWorker(config) {
   await refreshSymbols();
   scheduleSymbolRefresh();
 
-  // Fetch initial volume settings and start periodic refresh
+  // Fetch initial volume settings (only once at startup, no periodic refresh)
   await refreshVolumeSettings();
-  scheduleSettingsRefresh();
 
   if (!ws && trackedSymbols.length > 0) {
     connect();
   }
 
-  return () => {
-    closedByUser = true;
-    if (ws) ws.close();
+  // Return control object with stop and refreshSettings methods
+  return {
+    stop: () => {
+      closedByUser = true;
+      if (ws) ws.close();
+    },
+    refreshSettings: refreshVolumeSettings,
   };
 }
 
@@ -570,11 +573,59 @@ async function main() {
   const port = Number(process.env.PORT) || 8080;
   const log = createLogger(logLevel);
 
-  http
-    .createServer((_req, res) => {
+  // Store worker instances for refresh endpoint
+  let spotWorker = null;
+  let futuresWorker = null;
+
+  const server = http.createServer((req, res) => {
+    // Parse URL path (handle both absolute and relative paths)
+    const urlPath = req.url?.split('?')[0] || '/';
+    
+    // Health check endpoint
+    if (urlPath === '/' || urlPath === '/health') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ status: 'ok', uptime: process.uptime() }));
-    })
+      return;
+    }
+
+    // Refresh settings endpoint (requires WORKER_API_TOKEN)
+    if (urlPath === '/refresh-settings' && req.method === 'POST') {
+      const authHeader = req.headers.authorization || req.headers.Authorization;
+      const token = authHeader?.replace('Bearer ', '').trim();
+      
+      if (token !== workerApiToken) {
+        log.warn('Unauthorized settings refresh attempt');
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Unauthorized' }));
+        return;
+      }
+
+      log.info('Settings refresh triggered via API');
+      
+      // Trigger settings refresh for both workers
+      Promise.all([
+        spotWorker?.refreshSettings?.() || Promise.resolve(),
+        futuresWorker?.refreshSettings?.() || Promise.resolve(),
+      ])
+        .then(() => {
+          log.info('Settings refresh completed successfully');
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: true, message: 'Settings refresh triggered' }));
+        })
+        .catch((error) => {
+          log.error('Failed to refresh settings', { error });
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Failed to refresh settings' }));
+        });
+      return;
+    }
+
+    // 404 for unknown endpoints
+    res.writeHead(404, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Not found' }));
+  });
+
+  server
     .listen(port, () => {
       log.info('Health server listening', { port });
     })
@@ -592,7 +643,7 @@ async function main() {
   });
 
   // Start spot worker
-  const stopSpot = await startWorker({
+  spotWorker = await startWorker({
     baseUrl,
     workerApiToken,
     pushTriggerToken,
@@ -605,7 +656,7 @@ async function main() {
   });
 
   // Start futures worker
-  const stopFutures = await startWorker({
+  futuresWorker = await startWorker({
     baseUrl,
     workerApiToken,
     pushTriggerToken,
@@ -619,8 +670,8 @@ async function main() {
 
   function handleExit(signal) {
     log.info(`Received ${signal}. Shutting down gracefully.`);
-    stopSpot();
-    stopFutures();
+    spotWorker?.stop();
+    futuresWorker?.stop();
     process.exit(0);
   }
 

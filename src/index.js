@@ -385,6 +385,7 @@ async function startWorker(config) {
     }, symbolRefreshMs);
   }
 
+
   async function refreshVolumeSettings() {
     console.log(`🔄 ${type.toUpperCase()} Refreshing settings from API...`);
     try {

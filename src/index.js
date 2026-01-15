@@ -385,6 +385,16 @@ async function startWorker(config) {
     }, symbolRefreshMs);
   }
 
+  function scheduleSettingsRefresh() {
+    // Check for settings updates every 30 seconds (fallback if backend can't reach worker)
+    // This is a lightweight database query, so 30 seconds is safe for API limits
+    // 2 workers × 2 requests/min = 4 requests/min = 240 requests/hour (well within Vercel limits)
+    setTimeout(async () => {
+      await refreshVolumeSettings();
+      scheduleSettingsRefresh();
+    }, 30000); // 30 seconds
+  }
+
 
   async function refreshVolumeSettings() {
     console.log(`🔄 ${type.toUpperCase()} Refreshing settings from API...`);
@@ -548,6 +558,8 @@ async function startWorker(config) {
   try {
     await refreshSymbols();
     scheduleSymbolRefresh();
+    // Start periodic settings refresh (fallback if backend can't reach worker)
+    scheduleSettingsRefresh();
   } catch (error) {
     // Don't throw - continue with empty symbols, will retry later
     log.error(`[${type.toUpperCase()}] Failed to fetch symbols`, { error: error.message });

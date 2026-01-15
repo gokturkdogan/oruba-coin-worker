@@ -191,6 +191,7 @@ async function fetchVolumeSettings(baseUrl, token, log) {
   return {
     spotVolumeThreshold: Number(payload.spotVolumeThreshold) || DEFAULT_VOLUME_THRESHOLD_USD,
     futuresVolumeThreshold: Number(payload.futuresVolumeThreshold) || DEFAULT_FUTURES_VOLUME_THRESHOLD_USD,
+    updatedAt: payload.updatedAt || null,
   };
 }
 
@@ -320,6 +321,7 @@ async function startWorker(config) {
 
   // Dynamic volume threshold (updated from API)
   let volumeThresholdUsd = initialVolumeThresholdUsd;
+  let lastSettingsUpdatedAt = null; // Track when settings were last updated
 
   const windows = new Map(); // symbol -> rolling window
   const lastBroadcastAt = new Map(); // symbol -> timestamp
@@ -385,24 +387,41 @@ async function startWorker(config) {
         ? settings.futuresVolumeThreshold 
         : settings.spotVolumeThreshold;
       
-      if (newThreshold !== volumeThresholdUsd) {
-        log.info(`Updated ${type} volume threshold`, {
-          old: volumeThresholdUsd,
-          new: newThreshold,
-        });
-        volumeThresholdUsd = newThreshold;
+      // Only update if settings actually changed (check updatedAt)
+      // First load: lastSettingsUpdatedAt is null, so always update
+      const settingsChanged = !lastSettingsUpdatedAt || 
+        (settings.updatedAt && settings.updatedAt !== lastSettingsUpdatedAt);
+      
+      if (settingsChanged) {
+        if (newThreshold !== volumeThresholdUsd) {
+          log.info(`Updated ${type} volume threshold`, {
+            old: volumeThresholdUsd,
+            new: newThreshold,
+            updatedAt: settings.updatedAt,
+          });
+          volumeThresholdUsd = newThreshold;
+        } else if (!lastSettingsUpdatedAt) {
+          // First load, log current threshold
+          log.info(`Loaded ${type} volume threshold`, {
+            threshold: volumeThresholdUsd,
+            updatedAt: settings.updatedAt,
+          });
+        }
+        lastSettingsUpdatedAt = settings.updatedAt;
       }
+      // If settings haven't changed, skip update (no log needed)
     } catch (error) {
       log.error(`Failed to refresh ${type} volume settings`, { error });
     }
   }
 
   function scheduleSettingsRefresh() {
-    // Refresh settings every 60 seconds (same as symbol refresh)
+    // Refresh settings every 5 minutes (check if changed, but don't spam API)
+    const SETTINGS_REFRESH_MS = 5 * 60 * 1000; // 5 minutes
     setTimeout(async () => {
       await refreshVolumeSettings();
       scheduleSettingsRefresh();
-    }, symbolRefreshMs);
+    }, SETTINGS_REFRESH_MS);
   }
 
   async function handleTrade(symbol, tradeTime, quoteUsd) {

@@ -198,11 +198,6 @@ async function fetchVolumeSettings(baseUrl, token, log) {
 async function broadcastVolumeAlert(baseUrl, token, symbol, volumeUsd, log) {
   const url = `${normalizeBaseUrl(baseUrl)}/api/push/volume`;
 
-  log.info('Broadcasting volume alert', {
-    symbol,
-    volumeUsd,
-  });
-
   const response = await fetch(url, {
     method: 'POST',
     headers: {
@@ -228,20 +223,26 @@ async function broadcastVolumeAlert(baseUrl, token, symbol, volumeUsd, log) {
   const total = result.total || 0;
   const emails = result.successfulEmails || [];
   
-  // Console log for sent notifications
-  const emailList = emails.length > 0 ? ` | Users: ${emails.join(', ')}` : '';
-  console.log(`📢 NOTIFICATION SENT: ${symbol.toUpperCase()} | Volume: $${Math.round(volumeUsd).toLocaleString()} | Sent to: ${successful}/${total} users${emailList}`);
+  // Beautiful formatted log for sent notifications
+  const notificationLog = {
+    type: 'SPOT',
+    symbol: symbol.toUpperCase(),
+    volume: `$${Math.round(volumeUsd).toLocaleString()}`,
+    sent: `${successful}/${total} users`,
+    users: emails.length > 0 ? emails : ['No users'],
+  };
+  
+  console.log('\n📢 ========================================');
+  console.log('   SPOT VOLUME NOTIFICATION SENT');
+  console.log('========================================');
+  console.log(JSON.stringify(notificationLog, null, 2));
+  console.log('========================================\n');
 
   return result;
 }
 
 async function broadcastFuturesVolumeAlert(baseUrl, token, symbol, volumeUsd, log) {
   const url = `${normalizeBaseUrl(baseUrl)}/api/push/futures-volume`;
-
-  log.info('Broadcasting futures volume alert', {
-    symbol,
-    volumeUsd,
-  });
 
   const response = await fetch(url, {
     method: 'POST',
@@ -268,9 +269,20 @@ async function broadcastFuturesVolumeAlert(baseUrl, token, symbol, volumeUsd, lo
   const total = result.total || 0;
   const emails = result.successfulEmails || [];
   
-  // Console log for sent notifications
-  const emailList = emails.length > 0 ? ` | Users: ${emails.join(', ')}` : '';
-  console.log(`📢 FUTURES NOTIFICATION SENT: ${symbol.toUpperCase()} | Volume: $${Math.round(volumeUsd).toLocaleString()} | Sent to: ${successful}/${total} users${emailList}`);
+  // Beautiful formatted log for sent notifications
+  const notificationLog = {
+    type: 'FUTURES',
+    symbol: symbol.toUpperCase(),
+    volume: `$${Math.round(volumeUsd).toLocaleString()}`,
+    sent: `${successful}/${total} users`,
+    users: emails.length > 0 ? emails : ['No users'],
+  };
+  
+  console.log('\n📢 ========================================');
+  console.log('   FUTURES VOLUME NOTIFICATION SENT');
+  console.log('========================================');
+  console.log(JSON.stringify(notificationLog, null, 2));
+  console.log('========================================\n');
 
   return result;
 }
@@ -353,7 +365,9 @@ async function startWorker(config) {
   }
 
   async function refreshSymbols() {
-    if (explicitSymbols) return;
+    if (explicitSymbols) {
+      return;
+    }
 
     try {
       const symbols = type === 'futures' 
@@ -361,15 +375,14 @@ async function startWorker(config) {
         : await fetchTrackedSymbols(baseUrl, workerApiToken, log);
       const unique = Array.from(new Set(symbols)).sort();
 
-      log.info(`Tracked ${type} symbols`, { count: unique.length, symbols: unique });
-
       if (!symbolsEqual(unique, trackedSymbols)) {
         trackedSymbols = unique;
         cleanupWindows(trackedSymbols);
         reconnect(true);
       }
     } catch (error) {
-      log.error(`Failed to refresh ${type} symbols`, { error });
+      log.error(`Failed to refresh ${type} symbols`, { error: error.message });
+      throw error; // Re-throw so caller knows it failed
     }
   }
 
@@ -381,48 +394,66 @@ async function startWorker(config) {
   }
 
   async function refreshVolumeSettings() {
+    console.log(`\n🔄 ${type.toUpperCase()} Refreshing settings from API...`);
     try {
       const settings = await fetchVolumeSettings(baseUrl, workerApiToken, log);
       const newThreshold = type === 'futures' 
         ? settings.futuresVolumeThreshold 
         : settings.spotVolumeThreshold;
       
+      const debugInfo = {
+        worker: type.toUpperCase(),
+        currentThreshold: `$${volumeThresholdUsd.toLocaleString()}`,
+        newThreshold: `$${newThreshold.toLocaleString()}`,
+        lastUpdatedAt: lastSettingsUpdatedAt || 'never',
+        apiUpdatedAt: settings.updatedAt || 'unknown',
+      };
+      console.log(`📊 ${type.toUpperCase()} Settings comparison:`);
+      console.log(JSON.stringify(debugInfo, null, 2));
+      
       // Only update if settings actually changed (check updatedAt)
-      // First load: lastSettingsUpdatedAt is null, so always update
       const settingsChanged = !lastSettingsUpdatedAt || 
         (settings.updatedAt && settings.updatedAt !== lastSettingsUpdatedAt);
       
+      console.log(`📊 ${type.toUpperCase()} Settings changed: ${settingsChanged}`);
+      
       if (settingsChanged) {
         if (newThreshold !== volumeThresholdUsd) {
-          log.info(`Updated ${type} volume threshold`, {
-            old: volumeThresholdUsd,
-            new: newThreshold,
+          const updateInfo = {
+            worker: type.toUpperCase(),
+            action: 'Threshold updated',
+            old: `$${volumeThresholdUsd.toLocaleString()}`,
+            new: `$${newThreshold.toLocaleString()}`,
             updatedAt: settings.updatedAt,
-          });
+          };
+          console.log('\n⚙️  ========================================');
+          console.log(`   ${type.toUpperCase()} THRESHOLD UPDATED`);
+          console.log('========================================');
+          console.log(JSON.stringify(updateInfo, null, 2));
+          console.log('========================================\n');
           volumeThresholdUsd = newThreshold;
-        } else if (!lastSettingsUpdatedAt) {
-          // First load, log current threshold
-          log.info(`Loaded ${type} volume threshold`, {
-            threshold: volumeThresholdUsd,
-            updatedAt: settings.updatedAt,
-          });
+        } else {
+          console.log(`ℹ️  ${type.toUpperCase()} Threshold unchanged: $${volumeThresholdUsd.toLocaleString()}`);
         }
         lastSettingsUpdatedAt = settings.updatedAt;
+      } else {
+        console.log(`⏭️  ${type.toUpperCase()} Settings not changed (same updatedAt), skipping update`);
       }
-      // If settings haven't changed, skip update (no log needed)
     } catch (error) {
+      const errorInfo = {
+        worker: type.toUpperCase(),
+        action: 'Refresh settings',
+        error: error.message,
+        status: 'Failed',
+      };
+      console.log('\n❌ ========================================');
+      console.log(`   ${type.toUpperCase()} SETTINGS REFRESH FAILED`);
+      console.log('========================================');
+      console.log(JSON.stringify(errorInfo, null, 2));
+      console.log('========================================\n');
       log.error(`Failed to refresh ${type} volume settings`, { error });
     }
   }
-
-  // Expose refresh function for external trigger (no periodic refresh)
-  return {
-    stop: () => {
-      closedByUser = true;
-      if (ws) ws.close();
-    },
-    refreshSettings: refreshVolumeSettings,
-  };
 
   async function handleTrade(symbol, tradeTime, quoteUsd) {
     const now = Date.now();
@@ -465,9 +496,6 @@ async function startWorker(config) {
 
   function reconnect(dueToSymbolsChange) {
     if (ws) {
-      log.info('Closing existing WebSocket connection', {
-        reason: dueToSymbolsChange ? 'symbols-changed' : 'reconnect',
-      });
       reconnectAttempts = 0;
       ws.close();
     } else if (dueToSymbolsChange) {
@@ -477,25 +505,39 @@ async function startWorker(config) {
 
   function connect() {
     if (!trackedSymbols.length) {
-      log.warn(`No ${type} symbols to track. Waiting for symbols.`);
       return;
     }
 
     const url = buildBinanceWsUrl(trackedSymbols, process.env.BINANCE_WS_URL, type);
     if (!url) {
       log.warn(`Unable to determine Binance ${type} WebSocket URL. Skipping connection.`);
+      const errorInfo = {
+        worker: type.toUpperCase(),
+        error: 'Cannot build WebSocket URL',
+        status: 'Skipped',
+      };
+      console.log('\n❌ ========================================');
+      console.log(`   ${type.toUpperCase()} WEBSOCKET URL ERROR`);
+      console.log('========================================');
+      console.log(JSON.stringify(errorInfo, null, 2));
+      console.log('========================================\n');
       return;
     }
-
-    log.info(`Connecting to Binance ${type} WebSocket`, {
-      url,
-      symbolCount: trackedSymbols.length,
-    });
 
     ws = new WebSocket(url);
 
     ws.on('open', () => {
-      log.info('Connected to Binance WebSocket');
+      const connectionInfo = {
+        worker: type.toUpperCase(),
+        status: 'Connected',
+        symbolCount: trackedSymbols.length,
+        threshold: `$${volumeThresholdUsd.toLocaleString()}`,
+      };
+      console.log('\n✅ ========================================');
+      console.log(`   ${type.toUpperCase()} WEBSOCKET CONNECTED`);
+      console.log('========================================');
+      console.log(JSON.stringify(connectionInfo, null, 2));
+      console.log('========================================\n');
       reconnectAttempts = 0;
     });
 
@@ -506,7 +548,6 @@ async function startWorker(config) {
     });
 
     ws.on('close', (code, reason) => {
-      log.warn('Binance WebSocket closed', { code, reason: reason.toString() });
       if (closedByUser) return;
       scheduleReconnect();
     });
@@ -524,18 +565,79 @@ async function startWorker(config) {
       MAX_WS_RETRY_MS
     );
 
-    log.info('Reconnecting to Binance WebSocket', { delay });
     setTimeout(connect, delay);
   }
 
-  await refreshSymbols();
-  scheduleSymbolRefresh();
+  // Fetch symbols
+  try {
+    await refreshSymbols();
+    scheduleSymbolRefresh();
+  } catch (error) {
+    // Don't throw - continue with empty symbols, will retry later
+    log.error(`[${type.toUpperCase()}] Failed to fetch symbols`, { error: error.message });
+    const errorInfo = {
+      worker: type.toUpperCase(),
+      action: 'Fetch symbols',
+      error: error.message,
+      status: 'Will retry',
+    };
+    console.log('\n⚠️  ========================================');
+    console.log(`   ${type.toUpperCase()} SYMBOL FETCH FAILED`);
+    console.log('========================================');
+    console.log(JSON.stringify(errorInfo, null, 2));
+    console.log('========================================\n');
+  }
 
-  // Fetch initial volume settings (only once at startup, no periodic refresh)
-  await refreshVolumeSettings();
+  // Log tracked symbols (only on initial load)
+  if (trackedSymbols.length > 0) {
+    const symbolsInfo = {
+      worker: type.toUpperCase(),
+      total: trackedSymbols.length,
+      symbols: trackedSymbols.slice(0, 20),
+      ...(trackedSymbols.length > 20 && { note: `... and ${trackedSymbols.length - 20} more` }),
+    };
+    console.log(`\n📊 ========================================`);
+    console.log(`   ${type.toUpperCase()} SYMBOLS LOADED`);
+    console.log('========================================');
+    console.log(JSON.stringify(symbolsInfo, null, 2));
+    console.log('========================================\n');
+  } else {
+    const noSymbolsInfo = {
+      worker: type.toUpperCase(),
+      status: 'No symbols available',
+      action: 'Will retry',
+    };
+    console.log('\n⚠️  ========================================');
+    console.log(`   ${type.toUpperCase()} NO SYMBOLS`);
+    console.log('========================================');
+    console.log(JSON.stringify(noSymbolsInfo, null, 2));
+    console.log('========================================\n');
+  }
 
+  // Start WebSocket connection
   if (!ws && trackedSymbols.length > 0) {
     connect();
+    const wsInfo = {
+      worker: type.toUpperCase(),
+      status: 'Connecting',
+      symbolCount: trackedSymbols.length,
+    };
+    console.log(`\n🔌 ========================================`);
+    console.log(`   ${type.toUpperCase()} WEBSOCKET INITIATED`);
+    console.log('========================================');
+    console.log(JSON.stringify(wsInfo, null, 2));
+    console.log('========================================\n');
+  } else if (!trackedSymbols.length) {
+    const wsInfo = {
+      worker: type.toUpperCase(),
+      status: 'Not started',
+      reason: 'No symbols available',
+    };
+    console.log('\n⚠️  ========================================');
+    console.log(`   ${type.toUpperCase()} WEBSOCKET NOT STARTED`);
+    console.log('========================================');
+    console.log(JSON.stringify(wsInfo, null, 2));
+    console.log('========================================\n');
   }
 
   // Return control object with stop and refreshSettings methods
@@ -581,6 +683,9 @@ async function main() {
     // Parse URL path (handle both absolute and relative paths)
     const urlPath = req.url?.split('?')[0] || '/';
     
+    // Log all incoming requests
+    console.log(`\n📥 Incoming request: ${req.method} ${urlPath}`);
+    
     // Health check endpoint
     if (urlPath === '/' || urlPath === '/health') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -590,6 +695,7 @@ async function main() {
 
     // Refresh settings endpoint (requires WORKER_API_TOKEN)
     if (urlPath === '/refresh-settings' && req.method === 'POST') {
+      console.log(`\n🔔 POST /refresh-settings received`);
       const authHeader = req.headers.authorization || req.headers.Authorization;
       const token = authHeader?.replace('Bearer ', '').trim();
       
@@ -600,19 +706,79 @@ async function main() {
         return;
       }
 
+      const refreshInfo = {
+        action: 'Settings refresh',
+        triggeredBy: 'API',
+        timestamp: new Date().toISOString(),
+      };
+      console.log('\n🔔 ========================================');
+      console.log('   SETTINGS REFRESH TRIGGERED');
+      console.log('========================================');
+      console.log(JSON.stringify(refreshInfo, null, 2));
+      console.log('========================================\n');
       log.info('Settings refresh triggered via API');
+      
+      // Check if workers are available
+      const spotAvailable = spotWorker && typeof spotWorker.refreshSettings === 'function';
+      const futuresAvailable = futuresWorker && typeof futuresWorker.refreshSettings === 'function';
+      
+      console.log(`\n📋 Worker availability check:`);
+      console.log(`   SPOT worker: ${spotAvailable ? 'available' : 'NOT available'}`);
+      console.log(`   FUTURES worker: ${futuresAvailable ? 'available' : 'NOT available'}`);
+      
+      if (!spotAvailable && !futuresAvailable) {
+        const errorInfo = {
+          action: 'Settings refresh',
+          status: 'Failed',
+          error: 'No workers available',
+          spotAvailable,
+          futuresAvailable,
+        };
+        console.log('\n❌ ========================================');
+        console.log('   SETTINGS REFRESH FAILED');
+        console.log('========================================');
+        console.log(JSON.stringify(errorInfo, null, 2));
+        console.log('========================================\n');
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'No workers available' }));
+        return;
+      }
       
       // Trigger settings refresh for both workers
       Promise.all([
-        spotWorker?.refreshSettings?.() || Promise.resolve(),
-        futuresWorker?.refreshSettings?.() || Promise.resolve(),
+        spotAvailable ? spotWorker.refreshSettings() : Promise.resolve(),
+        futuresAvailable ? futuresWorker.refreshSettings() : Promise.resolve(),
       ])
         .then(() => {
+          const successInfo = {
+            action: 'Settings refresh',
+            status: 'Completed',
+            workers: [
+              ...(spotAvailable ? ['SPOT'] : []),
+              ...(futuresAvailable ? ['FUTURES'] : []),
+            ],
+          };
+          console.log('\n✅ ========================================');
+          console.log('   SETTINGS REFRESH COMPLETED');
+          console.log('========================================');
+          console.log(JSON.stringify(successInfo, null, 2));
+          console.log('========================================\n');
           log.info('Settings refresh completed successfully');
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ success: true, message: 'Settings refresh triggered' }));
         })
         .catch((error) => {
+          const errorInfo = {
+            action: 'Settings refresh',
+            status: 'Failed',
+            error: error.message,
+            stack: error.stack,
+          };
+          console.log('\n❌ ========================================');
+          console.log('   SETTINGS REFRESH FAILED');
+          console.log('========================================');
+          console.log(JSON.stringify(errorInfo, null, 2));
+          console.log('========================================\n');
           log.error('Failed to refresh settings', { error });
           res.writeHead(500, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: 'Failed to refresh settings' }));
@@ -633,40 +799,101 @@ async function main() {
       log.error('Failed to start health server', { error });
     });
 
-  log.info('Starting Oruba 15m volume workers', {
-    baseUrl: normalizeBaseUrl(baseUrl),
-    symbolRefreshMs,
-    volumeWindowMs,
-    spotThresholdUsd: volumeThresholdUsd,
-    futuresThresholdUsd: futuresVolumeThresholdUsd,
-    notificationCooldownMs,
-  });
+  // Wait a bit for server to be ready
+  await new Promise(resolve => setTimeout(resolve, 100));
+
+  // Fetch settings from API first (before starting workers)
+  let spotThresholdFromApi = volumeThresholdUsd;
+  let futuresThresholdFromApi = futuresVolumeThresholdUsd;
+  
+  try {
+    const settings = await fetchVolumeSettings(baseUrl, workerApiToken, log);
+    spotThresholdFromApi = settings.spotVolumeThreshold;
+    futuresThresholdFromApi = settings.futuresVolumeThreshold;
+  } catch (error) {
+    log.warn('Failed to fetch settings from API, using env defaults', { error });
+  }
+
+  // Log initial settings from API
+  const startupInfo = {
+    status: 'Starting',
+    settings: {
+      spot: {
+        threshold: `$${spotThresholdFromApi.toLocaleString()}`,
+        source: 'API',
+      },
+      futures: {
+        threshold: `$${futuresThresholdFromApi.toLocaleString()}`,
+        source: 'API',
+      },
+    },
+  };
+  
+  console.log('\n🚀 ========================================');
+  console.log('   ORUBA VOLUME WORKER STARTING');
+  console.log('========================================');
+  console.log(JSON.stringify(startupInfo, null, 2));
+  console.log('========================================\n');
 
   // Start spot worker
-  spotWorker = await startWorker({
+  console.log('🔄 Starting SPOT worker...');
+  try {
+    spotWorker = await startWorker({
     baseUrl,
     workerApiToken,
     pushTriggerToken,
     log,
     symbolRefreshMs,
     volumeWindowMs,
-    initialVolumeThresholdUsd: volumeThresholdUsd,
+    initialVolumeThresholdUsd: spotThresholdFromApi,
     notificationCooldownMs,
     type: 'spot',
-  });
+    });
+    console.log('✅ SPOT worker started successfully\n');
+  } catch (error) {
+    const errorInfo = {
+      worker: 'SPOT',
+      error: error.message,
+      status: 'Failed',
+    };
+    console.log('\n❌ ========================================');
+    console.log('   SPOT WORKER FAILED');
+    console.log('========================================');
+    console.log(JSON.stringify(errorInfo, null, 2));
+    console.log('========================================\n');
+    log.error('Failed to initialize spot worker', { error });
+    throw error;
+  }
 
   // Start futures worker
-  futuresWorker = await startWorker({
+  console.log('🔄 Starting FUTURES worker...');
+  try {
+    futuresWorker = await startWorker({
     baseUrl,
     workerApiToken,
     pushTriggerToken,
     log,
     symbolRefreshMs,
     volumeWindowMs,
-    initialVolumeThresholdUsd: futuresVolumeThresholdUsd,
+    initialVolumeThresholdUsd: futuresThresholdFromApi,
     notificationCooldownMs,
     type: 'futures',
-  });
+    });
+    console.log('✅ FUTURES worker started successfully\n');
+  } catch (error) {
+    const errorInfo = {
+      worker: 'FUTURES',
+      error: error.message,
+      status: 'Failed',
+    };
+    console.log('\n❌ ========================================');
+    console.log('   FUTURES WORKER FAILED');
+    console.log('========================================');
+    console.log(JSON.stringify(errorInfo, null, 2));
+    console.log('========================================\n');
+    log.error('Failed to initialize futures worker', { error });
+    throw error;
+  }
 
   function handleExit(signal) {
     log.info(`Received ${signal}. Shutting down gracefully.`);

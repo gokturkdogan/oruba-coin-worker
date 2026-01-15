@@ -171,6 +171,29 @@ async function fetchFuturesSymbols(baseUrl, token, log) {
     .filter((s) => !EXCLUDED_SYMBOLS.has(s));
 }
 
+async function fetchVolumeSettings(baseUrl, token, log) {
+  const url = `${normalizeBaseUrl(baseUrl)}/api/volume-alert/settings`;
+
+  const response = await fetch(url, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(
+      `Failed to fetch volume settings (${response.status} ${response.statusText}): ${text}`
+    );
+  }
+
+  const payload = await response.json();
+  return {
+    spotVolumeThreshold: Number(payload.spotVolumeThreshold) || DEFAULT_VOLUME_THRESHOLD_USD,
+    futuresVolumeThreshold: Number(payload.futuresVolumeThreshold) || DEFAULT_FUTURES_VOLUME_THRESHOLD_USD,
+  };
+}
+
 async function broadcastVolumeAlert(baseUrl, token, symbol, volumeUsd, log) {
   const url = `${normalizeBaseUrl(baseUrl)}/api/push/volume`;
 
@@ -283,7 +306,7 @@ async function startWorker(config) {
     log,
     symbolRefreshMs,
     volumeWindowMs,
-    volumeThresholdUsd,
+    initialVolumeThresholdUsd,
     notificationCooldownMs,
     type = 'spot', // 'spot' or 'futures'
   } = config;
@@ -294,6 +317,9 @@ async function startWorker(config) {
 
   let trackedSymbols = parseSymbols(process.env.BINANCE_SYMBOLS);
   const explicitSymbols = trackedSymbols.length > 0;
+
+  // Dynamic volume threshold (updated from API)
+  let volumeThresholdUsd = initialVolumeThresholdUsd;
 
   const windows = new Map(); // symbol -> rolling window
   const lastBroadcastAt = new Map(); // symbol -> timestamp
@@ -349,6 +375,33 @@ async function startWorker(config) {
     setTimeout(async () => {
       await refreshSymbols();
       scheduleSymbolRefresh();
+    }, symbolRefreshMs);
+  }
+
+  async function refreshVolumeSettings() {
+    try {
+      const settings = await fetchVolumeSettings(baseUrl, workerApiToken, log);
+      const newThreshold = type === 'futures' 
+        ? settings.futuresVolumeThreshold 
+        : settings.spotVolumeThreshold;
+      
+      if (newThreshold !== volumeThresholdUsd) {
+        log.info(`Updated ${type} volume threshold`, {
+          old: volumeThresholdUsd,
+          new: newThreshold,
+        });
+        volumeThresholdUsd = newThreshold;
+      }
+    } catch (error) {
+      log.error(`Failed to refresh ${type} volume settings`, { error });
+    }
+  }
+
+  function scheduleSettingsRefresh() {
+    // Refresh settings every 60 seconds (same as symbol refresh)
+    setTimeout(async () => {
+      await refreshVolumeSettings();
+      scheduleSettingsRefresh();
     }, symbolRefreshMs);
   }
 
@@ -459,6 +512,10 @@ async function startWorker(config) {
   await refreshSymbols();
   scheduleSymbolRefresh();
 
+  // Fetch initial volume settings and start periodic refresh
+  await refreshVolumeSettings();
+  scheduleSettingsRefresh();
+
   if (!ws && trackedSymbols.length > 0) {
     connect();
   }
@@ -523,7 +580,7 @@ async function main() {
     log,
     symbolRefreshMs,
     volumeWindowMs,
-    volumeThresholdUsd,
+    initialVolumeThresholdUsd: volumeThresholdUsd,
     notificationCooldownMs,
     type: 'spot',
   });
@@ -536,7 +593,7 @@ async function main() {
     log,
     symbolRefreshMs,
     volumeWindowMs,
-    volumeThresholdUsd: futuresVolumeThresholdUsd,
+    initialVolumeThresholdUsd: futuresVolumeThresholdUsd,
     notificationCooldownMs,
     type: 'futures',
   });

@@ -232,11 +232,7 @@ async function broadcastVolumeAlert(baseUrl, token, symbol, volumeUsd, log) {
     users: emails.length > 0 ? emails : ['No users'],
   };
   
-  console.log('\n📢 ========================================');
-  console.log('   SPOT VOLUME NOTIFICATION SENT');
-  console.log('========================================');
-  console.log(JSON.stringify(notificationLog, null, 2));
-  console.log('========================================\n');
+  console.log(`📢 SPOT VOLUME NOTIFICATION SENT | ${JSON.stringify(notificationLog)}`);
 
   return result;
 }
@@ -278,11 +274,7 @@ async function broadcastFuturesVolumeAlert(baseUrl, token, symbol, volumeUsd, lo
     users: emails.length > 0 ? emails : ['No users'],
   };
   
-  console.log('\n📢 ========================================');
-  console.log('   FUTURES VOLUME NOTIFICATION SENT');
-  console.log('========================================');
-  console.log(JSON.stringify(notificationLog, null, 2));
-  console.log('========================================\n');
+  console.log(`📢 FUTURES VOLUME NOTIFICATION SENT | ${JSON.stringify(notificationLog)}`);
 
   return result;
 }
@@ -394,7 +386,7 @@ async function startWorker(config) {
   }
 
   async function refreshVolumeSettings() {
-    console.log(`\n🔄 ${type.toUpperCase()} Refreshing settings from API...`);
+    console.log(`🔄 ${type.toUpperCase()} Refreshing settings from API...`);
     try {
       const settings = await fetchVolumeSettings(baseUrl, workerApiToken, log);
       const newThreshold = type === 'futures' 
@@ -408,8 +400,7 @@ async function startWorker(config) {
         lastUpdatedAt: lastSettingsUpdatedAt || 'never',
         apiUpdatedAt: settings.updatedAt || 'unknown',
       };
-      console.log(`📊 ${type.toUpperCase()} Settings comparison:`);
-      console.log(JSON.stringify(debugInfo, null, 2));
+      console.log(`📊 ${type.toUpperCase()} Settings comparison: ${JSON.stringify(debugInfo)}`);
       
       // Only update if settings actually changed (check updatedAt)
       const settingsChanged = !lastSettingsUpdatedAt || 
@@ -426,11 +417,7 @@ async function startWorker(config) {
             new: `$${newThreshold.toLocaleString()}`,
             updatedAt: settings.updatedAt,
           };
-          console.log('\n⚙️  ========================================');
-          console.log(`   ${type.toUpperCase()} THRESHOLD UPDATED`);
-          console.log('========================================');
-          console.log(JSON.stringify(updateInfo, null, 2));
-          console.log('========================================\n');
+          console.log(`⚙️  ${type.toUpperCase()} THRESHOLD UPDATED | ${JSON.stringify(updateInfo)}`);
           volumeThresholdUsd = newThreshold;
         } else {
           console.log(`ℹ️  ${type.toUpperCase()} Threshold unchanged: $${volumeThresholdUsd.toLocaleString()}`);
@@ -446,11 +433,7 @@ async function startWorker(config) {
         error: error.message,
         status: 'Failed',
       };
-      console.log('\n❌ ========================================');
-      console.log(`   ${type.toUpperCase()} SETTINGS REFRESH FAILED`);
-      console.log('========================================');
-      console.log(JSON.stringify(errorInfo, null, 2));
-      console.log('========================================\n');
+      console.log(`❌ ${type.toUpperCase()} SETTINGS REFRESH FAILED | ${JSON.stringify(errorInfo)}`);
       log.error(`Failed to refresh ${type} volume settings`, { error });
     }
   }
@@ -516,11 +499,7 @@ async function startWorker(config) {
         error: 'Cannot build WebSocket URL',
         status: 'Skipped',
       };
-      console.log('\n❌ ========================================');
-      console.log(`   ${type.toUpperCase()} WEBSOCKET URL ERROR`);
-      console.log('========================================');
-      console.log(JSON.stringify(errorInfo, null, 2));
-      console.log('========================================\n');
+      console.log(`❌ ${type.toUpperCase()} WEBSOCKET URL ERROR | ${JSON.stringify(errorInfo)}`);
       return;
     }
 
@@ -533,11 +512,7 @@ async function startWorker(config) {
         symbolCount: trackedSymbols.length,
         threshold: `$${volumeThresholdUsd.toLocaleString()}`,
       };
-      console.log('\n✅ ========================================');
-      console.log(`   ${type.toUpperCase()} WEBSOCKET CONNECTED`);
-      console.log('========================================');
-      console.log(JSON.stringify(connectionInfo, null, 2));
-      console.log('========================================\n');
+      console.log(`✅ ${type.toUpperCase()} WEBSOCKET CONNECTED | ${JSON.stringify(connectionInfo)}`);
       reconnectAttempts = 0;
     });
 
@@ -596,22 +571,14 @@ async function startWorker(config) {
       symbols: trackedSymbols.slice(0, 20),
       ...(trackedSymbols.length > 20 && { note: `... and ${trackedSymbols.length - 20} more` }),
     };
-    console.log(`\n📊 ========================================`);
-    console.log(`   ${type.toUpperCase()} SYMBOLS LOADED`);
-    console.log('========================================');
-    console.log(JSON.stringify(symbolsInfo, null, 2));
-    console.log('========================================\n');
+    console.log(`📊 ${type.toUpperCase()} SYMBOLS LOADED | ${JSON.stringify(symbolsInfo)}`);
   } else {
     const noSymbolsInfo = {
       worker: type.toUpperCase(),
       status: 'No symbols available',
       action: 'Will retry',
     };
-    console.log('\n⚠️  ========================================');
-    console.log(`   ${type.toUpperCase()} NO SYMBOLS`);
-    console.log('========================================');
-    console.log(JSON.stringify(noSymbolsInfo, null, 2));
-    console.log('========================================\n');
+    console.log(`⚠️  ${type.toUpperCase()} NO SYMBOLS | ${JSON.stringify(noSymbolsInfo)}`);
   }
 
   // Start WebSocket connection
@@ -622,22 +589,14 @@ async function startWorker(config) {
       status: 'Connecting',
       symbolCount: trackedSymbols.length,
     };
-    console.log(`\n🔌 ========================================`);
-    console.log(`   ${type.toUpperCase()} WEBSOCKET INITIATED`);
-    console.log('========================================');
-    console.log(JSON.stringify(wsInfo, null, 2));
-    console.log('========================================\n');
+    console.log(`🔌 ${type.toUpperCase()} WEBSOCKET INITIATED | ${JSON.stringify(wsInfo)}`);
   } else if (!trackedSymbols.length) {
     const wsInfo = {
       worker: type.toUpperCase(),
       status: 'Not started',
       reason: 'No symbols available',
     };
-    console.log('\n⚠️  ========================================');
-    console.log(`   ${type.toUpperCase()} WEBSOCKET NOT STARTED`);
-    console.log('========================================');
-    console.log(JSON.stringify(wsInfo, null, 2));
-    console.log('========================================\n');
+    console.log(`⚠️  ${type.toUpperCase()} WEBSOCKET NOT STARTED | ${JSON.stringify(wsInfo)}`);
   }
 
   // Return control object with stop and refreshSettings methods
@@ -684,7 +643,7 @@ async function main() {
     const urlPath = req.url?.split('?')[0] || '/';
     
     // Log all incoming requests
-    console.log(`\n📥 Incoming request: ${req.method} ${urlPath}`);
+    console.log(`📥 Incoming request: ${req.method} ${urlPath}`);
     
     // Health check endpoint
     if (urlPath === '/' || urlPath === '/health') {
@@ -695,7 +654,7 @@ async function main() {
 
     // Refresh settings endpoint (requires WORKER_API_TOKEN)
     if (urlPath === '/refresh-settings' && req.method === 'POST') {
-      console.log(`\n🔔 POST /refresh-settings received`);
+      console.log(`🔔 POST /refresh-settings received`);
       const authHeader = req.headers.authorization || req.headers.Authorization;
       const token = authHeader?.replace('Bearer ', '').trim();
       
@@ -711,20 +670,14 @@ async function main() {
         triggeredBy: 'API',
         timestamp: new Date().toISOString(),
       };
-      console.log('\n🔔 ========================================');
-      console.log('   SETTINGS REFRESH TRIGGERED');
-      console.log('========================================');
-      console.log(JSON.stringify(refreshInfo, null, 2));
-      console.log('========================================\n');
+      console.log(`🔔 SETTINGS REFRESH TRIGGERED | ${JSON.stringify(refreshInfo)}`);
       log.info('Settings refresh triggered via API');
       
       // Check if workers are available
       const spotAvailable = spotWorker && typeof spotWorker.refreshSettings === 'function';
       const futuresAvailable = futuresWorker && typeof futuresWorker.refreshSettings === 'function';
       
-      console.log(`\n📋 Worker availability check:`);
-      console.log(`   SPOT worker: ${spotAvailable ? 'available' : 'NOT available'}`);
-      console.log(`   FUTURES worker: ${futuresAvailable ? 'available' : 'NOT available'}`);
+      console.log(`📋 Worker availability check: SPOT=${spotAvailable ? 'available' : 'NOT available'}, FUTURES=${futuresAvailable ? 'available' : 'NOT available'}`);
       
       if (!spotAvailable && !futuresAvailable) {
         const errorInfo = {
@@ -734,11 +687,7 @@ async function main() {
           spotAvailable,
           futuresAvailable,
         };
-        console.log('\n❌ ========================================');
-        console.log('   SETTINGS REFRESH FAILED');
-        console.log('========================================');
-        console.log(JSON.stringify(errorInfo, null, 2));
-        console.log('========================================\n');
+        console.log(`❌ SETTINGS REFRESH FAILED | ${JSON.stringify(errorInfo)}`);
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'No workers available' }));
         return;
@@ -758,11 +707,7 @@ async function main() {
               ...(futuresAvailable ? ['FUTURES'] : []),
             ],
           };
-          console.log('\n✅ ========================================');
-          console.log('   SETTINGS REFRESH COMPLETED');
-          console.log('========================================');
-          console.log(JSON.stringify(successInfo, null, 2));
-          console.log('========================================\n');
+          console.log(`✅ SETTINGS REFRESH COMPLETED | ${JSON.stringify(successInfo)}`);
           log.info('Settings refresh completed successfully');
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ success: true, message: 'Settings refresh triggered' }));
@@ -774,11 +719,7 @@ async function main() {
             error: error.message,
             stack: error.stack,
           };
-          console.log('\n❌ ========================================');
-          console.log('   SETTINGS REFRESH FAILED');
-          console.log('========================================');
-          console.log(JSON.stringify(errorInfo, null, 2));
-          console.log('========================================\n');
+          console.log(`❌ SETTINGS REFRESH FAILED | ${JSON.stringify(errorInfo)}`);
           log.error('Failed to refresh settings', { error });
           res.writeHead(500, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: 'Failed to refresh settings' }));
@@ -829,13 +770,8 @@ async function main() {
     },
   };
   
-  console.log('\n🚀 ========================================');
-  console.log('   ORUBA VOLUME WORKER STARTING');
-  console.log('========================================');
-  console.log(JSON.stringify(startupInfo, null, 2));
-  console.log('========================================\n');
+  console.log(`🚀 ORUBA VOLUME WORKER STARTING | ${JSON.stringify(startupInfo)}`);
 
-  // Start spot worker
   console.log('🔄 Starting SPOT worker...');
   try {
     spotWorker = await startWorker({
@@ -849,23 +785,18 @@ async function main() {
     notificationCooldownMs,
     type: 'spot',
     });
-    console.log('✅ SPOT worker started successfully\n');
+    console.log('✅ SPOT worker started successfully');
   } catch (error) {
     const errorInfo = {
       worker: 'SPOT',
       error: error.message,
       status: 'Failed',
     };
-    console.log('\n❌ ========================================');
-    console.log('   SPOT WORKER FAILED');
-    console.log('========================================');
-    console.log(JSON.stringify(errorInfo, null, 2));
-    console.log('========================================\n');
+    console.log(`❌ SPOT WORKER FAILED | ${JSON.stringify(errorInfo)}`);
     log.error('Failed to initialize spot worker', { error });
     throw error;
   }
 
-  // Start futures worker
   console.log('🔄 Starting FUTURES worker...');
   try {
     futuresWorker = await startWorker({
@@ -879,18 +810,14 @@ async function main() {
     notificationCooldownMs,
     type: 'futures',
     });
-    console.log('✅ FUTURES worker started successfully\n');
+    console.log('✅ FUTURES worker started successfully');
   } catch (error) {
     const errorInfo = {
       worker: 'FUTURES',
       error: error.message,
       status: 'Failed',
     };
-    console.log('\n❌ ========================================');
-    console.log('   FUTURES WORKER FAILED');
-    console.log('========================================');
-    console.log(JSON.stringify(errorInfo, null, 2));
-    console.log('========================================\n');
+    console.log(`❌ FUTURES WORKER FAILED | ${JSON.stringify(errorInfo)}`);
     log.error('Failed to initialize futures worker', { error });
     throw error;
   }

@@ -6,6 +6,8 @@ const fetch = require('cross-fetch');
 const DEFAULT_SYMBOL_REFRESH_MS = 60_000;
 const DEFAULT_WS_RETRY_MS = 5_000;
 const MAX_WS_RETRY_MS = 60_000;
+/** Settings refresh: 10 min to limit DB calls. Override with SETTINGS_REFRESH_INTERVAL_MS. */
+const DEFAULT_SETTINGS_REFRESH_MS = 10 * 60_000;
 
 const DEFAULT_VOLUME_WINDOW_MS = 15 * 60_000;
 const DEFAULT_VOLUME_THRESHOLD_USD = 400_000;
@@ -386,13 +388,13 @@ async function startWorker(config) {
   }
 
   function scheduleSettingsRefresh() {
-    // Check for settings updates every 30 seconds (fallback if backend can't reach worker)
-    // This is a lightweight database query, so 30 seconds is safe for API limits
-    // 2 workers × 2 requests/min = 4 requests/min = 240 requests/hour (well within Vercel limits)
+    // Settings (volume threshold) rarely change. 10 min default to limit DB calls.
+    // Override with SETTINGS_REFRESH_INTERVAL_MS if you need faster updates.
+    const intervalMs = Number(process.env.SETTINGS_REFRESH_INTERVAL_MS) || DEFAULT_SETTINGS_REFRESH_MS;
     setTimeout(async () => {
       await refreshVolumeSettings();
       scheduleSettingsRefresh();
-    }, 30000); // 30 seconds
+    }, intervalMs);
   }
 
 

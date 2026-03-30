@@ -7,8 +7,6 @@ const DEFAULT_WS_RETRY_MS = 5_000;
 const MAX_WS_RETRY_MS = 60_000;
 /** Symbol list refresh: default once per week. Override with SYMBOL_REFRESH_INTERVAL_MS. */
 const DEFAULT_SYMBOL_REFRESH_MS = 7 * 24 * 60 * 60 * 1000; // 1 week
-/** Settings refresh: 10 min to limit DB calls. Override with SETTINGS_REFRESH_INTERVAL_MS. */
-const DEFAULT_SETTINGS_REFRESH_MS = 10 * 60_000;
 
 const DEFAULT_VOLUME_WINDOW_MS = 15 * 60_000;
 const DEFAULT_VOLUME_THRESHOLD_USD = 400_000;
@@ -412,17 +410,6 @@ async function startWorker(config) {
     }, symbolRefreshMs);
   }
 
-  function scheduleSettingsRefresh() {
-    // Settings (volume threshold) rarely change. 10 min default to limit DB calls.
-    // Override with SETTINGS_REFRESH_INTERVAL_MS if you need faster updates.
-    const intervalMs = Number(process.env.SETTINGS_REFRESH_INTERVAL_MS) || DEFAULT_SETTINGS_REFRESH_MS;
-    setTimeout(async () => {
-      await refreshVolumeSettings();
-      scheduleSettingsRefresh();
-    }, intervalMs);
-  }
-
-
   async function refreshVolumeSettings() {
     console.log(`🔄 ${type.toUpperCase()} Refreshing settings from API...`);
     try {
@@ -590,8 +577,6 @@ async function startWorker(config) {
   try {
     await refreshSymbols();
     scheduleSymbolRefresh();
-    // Start periodic settings refresh (fallback if backend can't reach worker)
-    scheduleSettingsRefresh();
   } catch (error) {
     // Don't throw - continue with empty symbols, will retry later
     log.error(`[${type.toUpperCase()}] Failed to fetch symbols`, { error: error.message });

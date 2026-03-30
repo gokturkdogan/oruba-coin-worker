@@ -198,8 +198,34 @@ async function fetchVolumeSettings(baseUrl, token, log) {
   };
 }
 
-async function broadcastVolumeAlert(baseUrl, token, symbol, volumeUsd, log) {
+async function fetchSubscriptions(baseUrl, token, log) {
+  const url = `${normalizeBaseUrl(baseUrl)}/api/push-subscriptions/list`;
+
+  const response = await fetch(url, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(
+      `Failed to fetch subscriptions (${response.status} ${response.statusText}): ${text}`
+    );
+  }
+
+  const payload = await response.json();
+  const subscriptions = Array.isArray(payload.subscriptions) ? payload.subscriptions : [];
+  return subscriptions;
+}
+
+async function broadcastVolumeAlert(baseUrl, token, symbol, volumeUsd, subscriptions, log) {
   const url = `${normalizeBaseUrl(baseUrl)}/api/push/volume`;
+
+  const body = { symbol, volumeUsd, windowMinutes: 15 };
+  if (subscriptions && subscriptions.length > 0) {
+    body.subscriptions = subscriptions;
+  }
 
   const response = await fetch(url, {
     method: 'POST',
@@ -207,11 +233,7 @@ async function broadcastVolumeAlert(baseUrl, token, symbol, volumeUsd, log) {
       Authorization: `Bearer ${token}`,
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({
-      symbol,
-      volumeUsd,
-      windowMinutes: 15,
-    }),
+    body: JSON.stringify(body),
   });
 
   if (!response.ok) {
@@ -240,8 +262,13 @@ async function broadcastVolumeAlert(baseUrl, token, symbol, volumeUsd, log) {
   return result;
 }
 
-async function broadcastFuturesVolumeAlert(baseUrl, token, symbol, volumeUsd, log) {
+async function broadcastFuturesVolumeAlert(baseUrl, token, symbol, volumeUsd, subscriptions, log) {
   const url = `${normalizeBaseUrl(baseUrl)}/api/push/futures-volume`;
+
+  const body = { symbol, volumeUsd, windowMinutes: 15 };
+  if (subscriptions && subscriptions.length > 0) {
+    body.subscriptions = subscriptions;
+  }
 
   const response = await fetch(url, {
     method: 'POST',
@@ -249,11 +276,7 @@ async function broadcastFuturesVolumeAlert(baseUrl, token, symbol, volumeUsd, lo
       Authorization: `Bearer ${token}`,
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({
-      symbol,
-      volumeUsd,
-      windowMinutes: 15,
-    }),
+    body: JSON.stringify(body),
   });
 
   if (!response.ok) {
@@ -316,6 +339,7 @@ async function startWorker(config) {
     volumeWindowMs,
     initialVolumeThresholdUsd,
     notificationCooldownMs,
+    getSubscriptions,
     type = 'spot', // 'spot' or 'futures'
   } = config;
 
@@ -479,15 +503,20 @@ async function startWorker(config) {
     lastBroadcastAt.set(symbol, now);
     
     try {
+      const subs = typeof getSubscriptions === 'function' ? getSubscriptions() : [];
+      let result;
       if (type === 'futures') {
-        await broadcastFuturesVolumeAlert(baseUrl, pushTriggerToken, symbol, sum, log);
+        result = await broadcastFuturesVolumeAlert(baseUrl, pushTriggerToken, symbol, sum, subs, log);
       } else {
-        await broadcastVolumeAlert(baseUrl, pushTriggerToken, symbol, sum, log);
+        result = await broadcastVolumeAlert(baseUrl, pushTriggerToken, symbol, sum, subs, log);
+      }
+      // Remove failed endpoints from cache
+      const failedEndpoints = result?.failedEndpoints;
+      if (Array.isArray(failedEndpoints) && failedEndpoints.length > 0 && typeof config.removeFailedSubscriptions === 'function') {
+        config.removeFailedSubscriptions(failedEndpoints);
       }
     } catch (error) {
       log.error(`Failed to broadcast ${type} volume alert`, { symbol, error });
-      // Cooldown already set above, so no need to set again
-      // This prevents spam even if API call fails
     }
   }
 
@@ -654,6 +683,9 @@ async function main() {
   let spotWorker = null;
   let futuresWorker = null;
 
+  // Subscription cache: loaded once at startup, shared by both workers
+  let cachedSubscriptions = [];
+
   const server = http.createServer((req, res) => {
     // Parse URL path (handle both absolute and relative paths)
     const urlPath = req.url?.split('?')[0] || '/';
@@ -771,6 +803,14 @@ async function main() {
     log.warn('Failed to fetch settings from API, using env defaults', { error });
   }
 
+  // Fetch push subscriptions into memory cache
+  try {
+    cachedSubscriptions = await fetchSubscriptions(baseUrl, workerApiToken, log);
+    console.log(`📋 SUBSCRIPTIONS CACHED | count: ${cachedSubscriptions.length}`);
+  } catch (error) {
+    log.warn('Failed to fetch subscriptions from API, notifications will fall back to DB', { error });
+  }
+
   // Log initial settings from API
   const startupInfo = {
     status: 'Starting',
@@ -799,6 +839,12 @@ async function main() {
     volumeWindowMs,
     initialVolumeThresholdUsd: spotThresholdFromApi,
     notificationCooldownMs,
+    getSubscriptions: () => cachedSubscriptions,
+    removeFailedSubscriptions: (endpoints) => {
+      const toRemove = new Set(endpoints);
+      cachedSubscriptions = cachedSubscriptions.filter((s) => !toRemove.has(s.endpoint));
+      console.log(`🗑️  Removed ${endpoints.length} failed subscriptions from cache | remaining: ${cachedSubscriptions.length}`);
+    },
     type: 'spot',
     });
     console.log('✅ SPOT worker started successfully');
@@ -824,6 +870,12 @@ async function main() {
     volumeWindowMs,
     initialVolumeThresholdUsd: futuresThresholdFromApi,
     notificationCooldownMs,
+    getSubscriptions: () => cachedSubscriptions,
+    removeFailedSubscriptions: (endpoints) => {
+      const toRemove = new Set(endpoints);
+      cachedSubscriptions = cachedSubscriptions.filter((s) => !toRemove.has(s.endpoint));
+      console.log(`🗑️  Removed ${endpoints.length} failed subscriptions from cache | remaining: ${cachedSubscriptions.length}`);
+    },
     type: 'futures',
     });
     console.log('✅ FUTURES worker started successfully');

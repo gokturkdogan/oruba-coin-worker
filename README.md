@@ -6,7 +6,7 @@ Real-time background service that listens to Binance **spot trade streams**, kee
 - Node.js
 - ws (WebSocket)
 - cross-fetch 
-- dotenv
+- dotenv 
 
 ### 🌐 Platforms
 - Binance WebSocket API
